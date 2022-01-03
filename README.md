@@ -1,2 +1,2 @@
-# custom-function-object
-Custom std::function implementation. Runs a bit faster than std::function
+# Custom function object implementation.
+Custom std::function implementation. Runs a bit faster than std::function.
