@@ -8,11 +8,30 @@ template<typename Return_T, typename... Args_T>
 class function<Return_T(Args_T...)>
 {
 private:
-    void *functor;
+    /**
+     * @brief If functor's data size is larger than a void pointer's size (e.g. a lambda with many capturing variables),
+     * then the functor member is a pointer to that data. Otherwise it's treated exactly as the functor's data to avoid
+     * heap allocations for small functors. In a special case, when the functor is a simple free function, the member
+     * functor holds its pointer.
+     */
+    void *functor = nullptr;
+    /**
+     * @brief Functor data size. Indicates that if larger than a void pointer's size, then the functor member is a
+     * pointer to a heap allocated functor data.
+     */
     size_t functor_size = 0;
+    /**
+     * @brief Pointer to the functor invoker to be called from () operator.
+     */
     Return_T (*invoker)(void *functor, Args_T&&...) = nullptr;
+    /**
+     * @brief Pointer to the functor constructor function.
+     */
     void * (*constructor)(void *, const void *) = nullptr;
-    void * (*destructor)(void *) = nullptr;
+    /**
+     * @brief Pointer to the functor destructor function.
+     */
+    void (*destructor)(void *) = nullptr;
 
 
     template<typename Functor_T>
@@ -29,46 +48,52 @@ private:
     }
 
     template<typename Functor_T>
-    static void construct(Functor_T *dst_functor, const Functor_T *src_functor)
+    static Functor_T * construct(Functor_T *dst_functor, const Functor_T *src_functor)
     {
-        new (dst_functor) Functor_T(*src_functor);
+        if (dst_functor)
+            return new (dst_functor) Functor_T(*src_functor);
+        else return new Functor_T(*src_functor);
     }
 
     template<typename Functor_T>
     static void destruct(Functor_T *functor)
     {
-        functor->~Functor_T();
+        delete functor;
     }
 
 public:
+    // Default constructor.
+    function() = default;
+
+    // Constructor accepting a functor of any type.
     template<typename Functor_T>
     function(const Functor_T &f)
     {
         functor_size = sizeof(Functor_T);
+        constructor = reinterpret_cast<decltype(constructor)>(&construct<Functor_T>);
+        destructor = reinterpret_cast<decltype(destructor)>(&destruct<Functor_T>);
         if constexpr (sizeof(Functor_T) > sizeof(functor))
         {
-            functor = new Functor_T(f);
+            functor = constructor(nullptr, &f);
             invoker = reinterpret_cast<decltype(invoker)>(&invoke_func_heap<Functor_T>);
         }
         else
         {
-            new (&functor) Functor_T(f);
+            constructor(&functor, &f);
             invoker = reinterpret_cast<decltype(invoker)>(&invoke_func<Functor_T>);
         }
-        constructor = reinterpret_cast<decltype(constructor)>(&construct<Functor_T>);
-        destructor = reinterpret_cast<decltype(destructor)>(&destruct<Functor_T>);
     }
 
-    function(const function &other) : 
-        functor_size(other.functor_size), 
-        invoker(invoker), 
-        constructor(constructor), 
-        destructor(destructor)
+    // Copy constructor.
+    function(const function &other) :
+        functor_size(other.functor_size),
+        invoker(other.invoker),
+        constructor(other.constructor),
+        destructor(other.destructor)
     {
         if (functor_size > sizeof(functor))
         {
-            functor = malloc(other.functor_size);
-            constructor(functor, other.functor);
+            functor = constructor(nullptr, other.functor);
         }
         else
         {
@@ -76,29 +101,32 @@ public:
         }
     }
 
-    function(function &&other) noexcept : 
-        functor(other.functor), 
-        functor_size(other.functor_size), 
-        invoker(other.invoker), 
-        constructor(other.constructor), 
+    // Move constructor.
+    function(function &&other) noexcept :
+        functor(other.functor),
+        functor_size(other.functor_size),
+        invoker(other.invoker),
+        constructor(other.constructor),
         destructor(other.destructor)
     {
         other.functor = nullptr;
         other.functor_size = 0;
-        other.invoker = nullptr;
         other.constructor = nullptr;
         other.destructor = nullptr;
     }
 
-
+    // The meaning behind all of these.
     inline Return_T operator()(Args_T&&... args)
     {
         return invoker(functor, std::forward<Args_T>(args)...);
     }
 
+    // Destructor that will call a function pointed by the desctructor if a functor is allocated in heap.
     ~function()
     {
-        if (functor_size > sizeof(functor))
+        if (functor_size > sizeof(functor) && functor)
+        {
             destructor(functor);
+        }
     }
 };
